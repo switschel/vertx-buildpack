@@ -16,7 +16,8 @@ module JavaBuildpack
       def compile
 	 download(@version,@uri) {|file| expand file}
 	 FileUtils.mkdir_p apps
-	 shell "zip -j #{zip_name} #{@droplet.root}/*"	
+	 FileUtils.cp_r "#{@droplet.root}/lib/.", "#{@droplet.sandbox}/lib"
+	 shell "(cd #{@droplet.root} && exec zip -r #{zip_name} *)"
       end
       
       def release
@@ -25,8 +26,7 @@ module JavaBuildpack
 	   @droplet.java_opts.as_env_var,
 	   "$PWD/#{(@droplet.sandbox + 'bin/vertx').relative_path_from(@droplet.root)}",
            'runzip',
-           "$PWD/#{(@droplet.sandbox+'apps').relative_path_from(@droplet.root)}/#{@application.details['application_name']}-1.0.0.zip"		   
-
+           "$PWD/#{(@droplet.sandbox+'apps').relative_path_from(@droplet.root)}/#{@application.details['application_name']}-1.0.0.zip"
         ].flatten.compact.join(' ')	      
       end	      
       
