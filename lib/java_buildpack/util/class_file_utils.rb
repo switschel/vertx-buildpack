@@ -1,6 +1,6 @@
 # Encoding: utf-8
 # Cloud Foundry Java Buildpack
-# Copyright 2013 the original author or authors.
+# Copyright 2013-2015 the original author or authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -32,7 +32,7 @@ module JavaBuildpack
         # @param [JavaBuildpack::Component::Application] application the application to search
         # @return [Array<Pathname>] a possibly empty list of files
         def class_files(application)
-          (application.root + CLASS_FILE_PATTERN).glob.reject { |path| path.directory? }.sort
+          (application.root + CLASS_FILE_PATTERN).glob.reject(&:directory?).sort
         end
 
         CLASS_FILE_PATTERN = '**/*.class'.freeze

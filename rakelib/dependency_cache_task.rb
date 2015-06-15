@@ -53,35 +53,44 @@ module Package
 
     private_constant :ARCHITECTURE_PATTERN, :DEFAULT_REPOSITORY_ROOT_PATTERN, :PLATFORM_PATTERN
 
-    def augment(raw, pattern, candidates, &block)
-      if raw.respond_to? :map
+    def augment(raw, key, pattern, candidates, &block)
+      if raw.respond_to? :at
         raw.map(&block)
       else
-        raw =~ pattern ? candidates.map { |p| raw.gsub pattern, p } : raw
+        if raw[:uri] =~ pattern
+          candidates.map do |candidate|
+            dup       = raw.clone
+            dup[key]  = candidate
+            dup[:uri] = raw[:uri].gsub pattern, candidate
+
+            dup
+          end
+        else
+          raw
+        end
       end
     end
 
     def augment_architecture(raw)
-      augment(raw, ARCHITECTURE_PATTERN, ARCHITECTURES) { |r| augment_architecture r }
+      augment(raw, :architecture, ARCHITECTURE_PATTERN, ARCHITECTURES) { |r| augment_architecture r }
     end
 
     def augment_path(raw)
-      if raw.respond_to? :map
+      if raw.respond_to? :at
         raw.map { |r| augment_path r }
       else
-        "#{raw.chomp('/')}/index.yml"
+        raw[:uri] = "#{raw[:uri].chomp('/')}/index.yml"
+        raw
       end
     end
 
     def augment_platform(raw)
-      augment(raw, PLATFORM_PATTERN, PLATFORMS) { |r| augment_platform r }
+      augment(raw, :platform, PLATFORM_PATTERN, PLATFORMS) { |r| augment_platform r }
     end
 
     def augment_repository_root(raw)
-      if raw.respond_to? :map
-        raw.map { |r| augment_repository_root r }
-      else
-        raw.gsub DEFAULT_REPOSITORY_ROOT_PATTERN, @default_repository_root
+      augment(raw, :repository_root, DEFAULT_REPOSITORY_ROOT_PATTERN, [@default_repository_root]) do |r|
+        augment_repository_root r
       end
     end
 
@@ -122,12 +131,13 @@ module Package
       configuration('repository')['default_repository_root'].chomp('/')
     end
 
-    def index_uris(configuration)
+    def index_configuration(configuration)
       [configuration['repository_root']]
-      .map { |r| augment_repository_root r }
-      .map { |r| augment_platform r }
-      .map { |r| augment_architecture r }
-      .map { |r| augment_path r }.flatten
+        .map { |r| { uri: r } }
+        .map { |r| augment_repository_root r }
+        .map { |r| augment_platform r }
+        .map { |r| augment_architecture r }
+        .map { |r| augment_path r }.flatten
     end
 
     def repository_configuration?(configuration)
@@ -138,21 +148,33 @@ module Package
       uris = []
 
       configurations.each do |configuration|
-        index_uris(configuration).each do |index_uri|
-          multitask PACKAGE_NAME => [cache_task(index_uri)]
+        index_configuration(configuration).each do |index_configuration|
+          multitask PACKAGE_NAME => [cache_task(index_configuration[:uri])]
 
-          @cache.get(index_uri) do |f|
-            index = YAML.load f
-            uris << index[version(configuration, index).to_s]
-          end
+          get_from_cache(configuration, index_configuration, uris)
         end
       end
 
       uris
     end
 
+    def get_from_cache(configuration, index_configuration, uris)
+      @cache.get(index_configuration[:uri]) do |f|
+        index         = YAML.load f
+        found_version = version(configuration, index)
+
+        if found_version.nil?
+          rake_output_message "Unable to resolve version '#{configuration['version']}' for platform " \
+                              "'#{index_configuration[:platform]}'"
+        end
+
+        uris << index[found_version.to_s] unless found_version.nil?
+      end
+    end
+
     def version(configuration, index)
-      JavaBuildpack::Repository::VersionResolver.resolve(JavaBuildpack::Util::TokenizedVersion.new(configuration['version']), index.keys)
+      JavaBuildpack::Repository::VersionResolver.resolve(
+        JavaBuildpack::Util::TokenizedVersion.new(configuration['version']), index.keys)
     end
 
   end

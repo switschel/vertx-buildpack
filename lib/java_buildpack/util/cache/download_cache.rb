@@ -1,6 +1,6 @@
 # Encoding: utf-8
 # Cloud Foundry Java Buildpack
-# Copyright 2013 the original author or authors.
+# Copyright 2013-2015 the original author or authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,8 +19,10 @@ require 'java_buildpack/util/cache'
 require 'java_buildpack/util/cache/cached_file'
 require 'java_buildpack/util/cache/inferred_network_failure'
 require 'java_buildpack/util/cache/internet_availability'
+require 'java_buildpack/util/sanitizer'
 require 'monitor'
 require 'net/http'
+require 'pathname'
 require 'tmpdir'
 require 'uri'
 
@@ -58,11 +60,17 @@ module JavaBuildpack
         #                           already in the cache
         # @return [Void]
         def get(uri, &block)
-          cached_file, downloaded = nil, nil
-          cached_file, downloaded = from_mutable_cache uri if InternetAvailability.instance.available?
-          cached_file, downloaded = from_immutable_caches(uri), false unless cached_file
+          cached_file             = nil
+          downloaded              = nil
 
-          fail "Unable to find cached file for #{uri}" unless cached_file
+          cached_file, downloaded = from_mutable_cache uri if InternetAvailability.instance.available?
+
+          unless cached_file
+            cached_file = from_immutable_caches(uri)
+            downloaded  = false
+          end
+
+          fail "Unable to find cached file for #{uri.sanitize_uri}" unless cached_file
           cached_file.cached(File::RDONLY | File::BINARY, downloaded, &block)
         end
 
@@ -75,6 +83,8 @@ module JavaBuildpack
         end
 
         private
+
+        CA_FILE = (Pathname.new(__FILE__).dirname + '../../../../resources/ca_certs.pem').freeze
 
         FAILURE_LIMIT = 5.freeze
 
@@ -107,9 +117,7 @@ module JavaBuildpack
           Net::HTTPTemporaryRedirect
         ].freeze
 
-        TIMEOUT_SECONDS = 10.freeze
-
-        private_constant :FAILURE_LIMIT, :HTTP_ERRORS, :REDIRECT_TYPES, :TIMEOUT_SECONDS
+        private_constant :CA_FILE, :FAILURE_LIMIT, :HTTP_ERRORS, :REDIRECT_TYPES
 
         def attempt(http, request, cached_file)
           downloaded = false
@@ -174,12 +182,23 @@ module JavaBuildpack
           end
         end
 
+        def debug_ssl(http)
+          socket = http.instance_variable_get('@socket')
+          return unless socket
+
+          io = socket.io
+          return unless io
+
+          session = io.session
+          @logger.debug { session.to_text } if session
+        end
+
         def from_mutable_cache(uri)
           cached_file = CachedFile.new @mutable_cache_root, uri, true
           cached      = update URI(uri), cached_file
           [cached_file, cached]
         rescue => e
-          @logger.warn { "Unable to download #{uri} into cache #{@mutable_cache_root}: #{e.message}" }
+          @logger.warn { "Unable to download #{uri.sanitize_uri} into cache #{@mutable_cache_root}: #{e.message}" }
           nil
         end
 
@@ -189,7 +208,7 @@ module JavaBuildpack
 
             next unless candidate.cached?
 
-            @logger.debug { "#{uri} found in cache #{cache_root}" }
+            @logger.debug { "#{uri.sanitize_uri} found in cache #{cache_root}" }
             return candidate
           end
 
@@ -198,10 +217,19 @@ module JavaBuildpack
 
         # Beware known problems with timeouts: https://www.ruby-forum.com/topic/143840
         def http_options(rich_uri)
-          { read_timeout:    TIMEOUT_SECONDS,
-            connect_timeout: TIMEOUT_SECONDS,
-            open_timeout:    TIMEOUT_SECONDS,
-            use_ssl:         secure?(rich_uri) }
+          http_options = {}
+
+          if secure?(rich_uri)
+            http_options[:use_ssl] = true
+            @logger.debug { 'Adding HTTP options for secure connection' }
+
+            if CA_FILE.exist?
+              http_options[:ca_file] = CA_FILE.to_s
+              @logger.debug { "Adding additional certs from #{CA_FILE}" }
+            end
+          end
+
+          http_options
         end
 
         def proxy(uri)
@@ -241,26 +269,32 @@ module JavaBuildpack
         def update(uri, cached_file)
           proxy(uri).start(uri.host, uri.port, http_options(uri)) do |http|
             @logger.debug { "HTTP: #{http.address}, #{http.port}, #{http_options(uri)}" }
-            request = request uri, cached_file
-            request.basic_auth uri.user, uri.password if uri.user && uri.password
+            debug_ssl(http) if secure?(uri)
 
-            failures = 0
-            begin
-              attempt http, request, cached_file
-            rescue InferredNetworkFailure, *HTTP_ERRORS => e
-              if (failures += 1) > FAILURE_LIMIT
-                InternetAvailability.instance.available false, "Request failed: #{e.message}"
-                raise e
-              else
-                @logger.warn { "Request failure #{failures}, retrying: #{e.message}" }
-                retry
-              end
+            attempt_update(cached_file, http, uri)
+          end
+        end
+
+        def attempt_update(cached_file, http, uri)
+          request = request uri, cached_file
+          request.basic_auth uri.user, uri.password if uri.user && uri.password
+
+          failures = 0
+          begin
+            attempt http, request, cached_file
+          rescue InferredNetworkFailure, *HTTP_ERRORS => e
+            if (failures += 1) > FAILURE_LIMIT
+              InternetAvailability.instance.available false, "Request failed: #{e.message}"
+              raise e
+            else
+              @logger.warn { "Request failure #{failures}, retrying: #{e.message}" }
+              retry
             end
           end
         end
 
         def validate_size(expected_size, cached_file)
-          return unless  expected_size
+          return unless expected_size
 
           actual_size = cached_file.cached(File::RDONLY) { |f| f.size }
           @logger.debug { "Validated content size #{actual_size} is #{expected_size}" }

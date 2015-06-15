@@ -60,18 +60,24 @@ module JavaBuildpack
 
       # (see JavaBuildpack::Component::VersionedDependencyComponent#supports?)
       def supports?
-        gf = JavaBuildpack::Util::GroovyUtils.groovy_files(@application)
+        gf = JavaBuildpack::Util::GroovyUtils.groovy_files(@application).reject { |file| logback_file? file }
         gf.length > 0 && all_pogo_or_configuration(gf) && no_main_method(gf) && no_shebang(gf) && !web_inf?
       end
 
       private
 
       def relative_groovy_files
-        JavaBuildpack::Util::GroovyUtils.groovy_files(@application).map { |gf| gf.relative_path_from(@application.root) }
+        JavaBuildpack::Util::GroovyUtils.groovy_files(@application).map do |gf|
+          gf.relative_path_from(@application.root)
+        end
+      end
+
+      def logback_file?(path)
+        %r{ch/qos/logback/.*\.groovy$} =~ path.to_s
       end
 
       def no_main_method(groovy_files)
-        none?(groovy_files) { |file| JavaBuildpack::Util::GroovyUtils.main_method? file } # note that this will scan comments
+        none?(groovy_files) { |file| JavaBuildpack::Util::GroovyUtils.main_method? file }
       end
 
       def no_shebang(groovy_files)

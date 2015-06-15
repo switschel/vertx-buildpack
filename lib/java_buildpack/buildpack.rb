@@ -1,6 +1,6 @@
 # Encoding: utf-8
 # Cloud Foundry Java Buildpack
-# Copyright 2013 the original author or authors.
+# Copyright 2013-2015 the original author or authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -60,7 +60,7 @@ module JavaBuildpack
       fail 'No container can run this application' unless container
 
       component_detection('JRE', @jres, true).first.compile
-      component_detection('framework', @frameworks, false).each { |framework| framework.compile }
+      component_detection('framework', @frameworks, false).each(&:compile)
       container.compile
     end
 
@@ -72,14 +72,15 @@ module JavaBuildpack
       container = component_detection('container', @containers, true).first
       fail 'No container can run this application' unless container
 
-      component_detection('JRE', @jres, true).first.release
-      component_detection('framework', @frameworks, false).each { |framework| framework.release }
-      command = container.release
+      commands = []
+      commands << component_detection('JRE', @jres, true).first.release
+      component_detection('framework', @frameworks, false).map(&:release)
+      commands << container.release
 
       payload = {
         'addons'                => [],
         'config_vars'           => {},
-        'default_process_types' => { 'web' => command }
+        'default_process_types' => { 'web' => commands.flatten.compact.join(' && ') }
       }.to_yaml
 
       @logger.debug { "Release Payload:\n#{payload}" }
@@ -108,8 +109,13 @@ module JavaBuildpack
       immutable_java_home  = Component::ImmutableJavaHome.new mutable_java_home, app_dir
       java_opts            = Component::JavaOpts.new app_dir
 
-      components = JavaBuildpack::Util::ConfigurationUtils.load 'components'
+      instantiate_components(additional_libraries, app_dir, application, immutable_java_home, java_opts,
+                             mutable_java_home)
+    end
 
+    def instantiate_components(additional_libraries, app_dir, application, immutable_java_home, java_opts,
+                               mutable_java_home)
+      components  = JavaBuildpack::Util::ConfigurationUtils.load 'components'
       @jres       = instantiate(components['jres'], additional_libraries, application, mutable_java_home, java_opts,
                                 app_dir)
       @frameworks = instantiate(components['frameworks'], additional_libraries, application, immutable_java_home,
@@ -214,7 +220,5 @@ module JavaBuildpack
       end
 
     end
-
   end
-
 end
