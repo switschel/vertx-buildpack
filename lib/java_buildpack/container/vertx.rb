@@ -17,6 +17,7 @@ module JavaBuildpack
 	 download(@version,@uri) {|file| expand file}
 	 FileUtils.mkdir_p apps
 	 FileUtils.cp_r "#{@droplet.root}/lib/.", "#{@droplet.sandbox}/lib"
+	 FileUtils.cp_r "#{@droplet.root}/web", "#{@droplet.sandbox}/"
 	 shell "(cd #{@droplet.root} && exec zip -r #{zip_name} *)"
       end
       
